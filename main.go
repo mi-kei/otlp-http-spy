@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -112,13 +113,14 @@ func handleRequest(w http.ResponseWriter, r *http.Request, protoMessage protoReq
 		uncompressedReqBody = body
 	}
 
-	if err := proto.Unmarshal(uncompressedReqBody, protoMessage.request); err != nil {
-		log.Printf("Failed to parse OTLP logs: %v", err)
-		http.Error(w, "invalid protobuf", http.StatusBadRequest)
-		return
-	}
+	//if err := proto.Unmarshal(uncompressedReqBody, protoMessage.request); err != nil {
+	//	log.Printf("Failed to parse OTLP logs: %v", err)
+	//	http.Error(w, "invalid protobuf", http.StatusBadRequest)
+	//	return
+	//}
 
-	logProtoMessage(buf, protoMessage.request, "Request")
+	//logProtoMessage(buf, protoMessage.request, "Request")
+	dumpBody("Request (decompressed)", uncompressedReqBody)
 
 	if forwardTo == "" {
 		w.WriteHeader(http.StatusOK)
@@ -256,4 +258,8 @@ func maybeDecompress(data []byte, encoding string) ([]byte, error) {
 	default:
 		return data, nil
 	}
+}
+
+func dumpBody(prefix string, data []byte) {
+	log.Printf("=== %s Dump ===\n%s", prefix, hex.Dump(data))
 }
