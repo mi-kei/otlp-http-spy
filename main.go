@@ -260,5 +260,5 @@ func maybeDecompress(data []byte, encoding string) ([]byte, error) {
 }
 
 func dumpBody(prefix string, data []byte) {
-	log.Printf("=== %s Dump ===\n%s", prefix, data)
+	log.Printf("=== %s Dump ===\n%s", prefix, string(data))
 }
