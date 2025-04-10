@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"compress/gzip"
-	"encoding/hex"
 	"fmt"
 	"io"
 	"log"
@@ -261,5 +260,5 @@ func maybeDecompress(data []byte, encoding string) ([]byte, error) {
 }
 
 func dumpBody(prefix string, data []byte) {
-	log.Printf("=== %s Dump ===\n%s", prefix, hex.Dump(data))
+	log.Printf("=== %s Dump ===\n%s", prefix, data)
 }
