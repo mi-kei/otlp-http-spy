@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"fmt"
 	"io"
 	"log"
@@ -103,7 +104,15 @@ func handleRequest(w http.ResponseWriter, r *http.Request, protoMessage protoReq
 	}
 	defer r.Body.Close()
 
-	if err := proto.Unmarshal(body, protoMessage.request); err != nil {
+	// 圧縮形式に応じて解凍後のデータを取得（解凍が必要であれば）
+	encoding := r.Header.Get("Content-Encoding")
+	uncompressedReqBody, err := maybeDecompress(body, encoding)
+	if err != nil {
+		log.Printf("解凍に失敗しました（エンコーディング: %s）: %v", encoding, err)
+		uncompressedReqBody = body
+	}
+
+	if err := proto.Unmarshal(uncompressedReqBody, protoMessage.request); err != nil {
 		log.Printf("Failed to parse OTLP logs: %v", err)
 		http.Error(w, "invalid protobuf", http.StatusBadRequest)
 		return
@@ -223,7 +232,7 @@ func forwardRequest(buf io.Writer, endpoint string, body []byte, original *http.
 			req.Header.Add(key, value)
 		}
 	}
-	req.Header.Set("Content-Type", "application/x-protobuf")
+	//req.Header.Set("Content-Type", "application/x-protobuf")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -232,4 +241,19 @@ func forwardRequest(buf io.Writer, endpoint string, body []byte, original *http.
 
 	logHTTPResponse(buf, resp)
 	return resp, nil
+}
+
+func maybeDecompress(data []byte, encoding string) ([]byte, error) {
+	switch encoding {
+	case "gzip":
+		r, err := gzip.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return nil, err
+		}
+		defer r.Close()
+		return io.ReadAll(r)
+		// 他の圧縮形式（例: snappyなど）の場合はここに追記
+	default:
+		return data, nil
+	}
 }
