@@ -4,16 +4,18 @@ import (
 	"bytes"
 	"compress/gzip"
 	"fmt"
-	"github.com/golang/protobuf/jsonpb"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
 
 	"github.com/caarlos0/env/v11"
-	"github.com/golang/protobuf/proto"
 	"github.com/golang/snappy"
-	"github.com/prometheus/prometheus/prompb"
+	protoLogs "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	protoMetrics "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
+	protoTrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 )
 
 var config Config
@@ -39,8 +41,29 @@ func (c *Config) Init() {
 }
 
 type protoRequestResponse struct {
-	request  *prompb.WriteRequest
-	response *prompb.WriteRequest
+	request  proto.Message
+	response proto.Message
+}
+
+func getProtoRequestResponse(tp string) protoRequestResponse {
+	switch tp {
+	case "logs":
+		return protoRequestResponse{
+			request:  &protoLogs.ExportLogsServiceRequest{},
+			response: &protoLogs.ExportLogsServiceResponse{},
+		}
+	case "traces":
+		return protoRequestResponse{
+			request:  &protoTrace.ExportTraceServiceRequest{},
+			response: &protoTrace.ExportTraceServiceResponse{},
+		}
+	case "metrics":
+		return protoRequestResponse{
+			request:  &protoMetrics.ExportMetricsServiceRequest{},
+			response: &protoMetrics.ExportMetricsServiceResponse{},
+		}
+	}
+	panic("invalid type")
 }
 
 func main() {
@@ -50,13 +73,23 @@ func main() {
 	config.Init()
 	logConfiguredEndpoints(config)
 
+	http.HandleFunc("/v1/logs", handleLogs)
+	http.HandleFunc("/v1/traces", handleTraces)
 	http.HandleFunc("/v1/metrics", handleMetrics)
 	log.Println("Starting OTLP/HTTP spy on ", config.ListenAddr)
 	log.Fatal(http.ListenAndServe(config.ListenAddr, nil))
 }
 
+func handleLogs(w http.ResponseWriter, r *http.Request) {
+	handleRequest(w, r, getProtoRequestResponse("logs"), config.LogsEndpoint)
+}
+
+func handleTraces(w http.ResponseWriter, r *http.Request) {
+	handleRequest(w, r, getProtoRequestResponse("traces"), config.TracesEndpoint)
+}
+
 func handleMetrics(w http.ResponseWriter, r *http.Request) {
-	handleRequest(w, r, protoRequestResponse{}, config.MetricsEndpoint)
+	handleRequest(w, r, getProtoRequestResponse("metrics"), config.MetricsEndpoint)
 }
 
 func handleRequest(w http.ResponseWriter, r *http.Request, protoMessage protoRequestResponse, forwardTo string) {
@@ -80,8 +113,8 @@ func handleRequest(w http.ResponseWriter, r *http.Request, protoMessage protoReq
 		log.Printf("解凍に失敗しました（エンコーディング: %s）: %v", encoding, err)
 		uncompressedReqBody = body
 	}
-	var req prompb.WriteRequest
-	if err := proto.Unmarshal(uncompressedReqBody, &req); err != nil {
+
+	if err := proto.Unmarshal(uncompressedReqBody, protoMessage.request); err != nil {
 		log.Printf("Failed to parse OTLP logs: %v", err)
 		http.Error(w, "invalid protobuf", http.StatusBadRequest)
 		return
@@ -173,7 +206,7 @@ func logRawResponseBody(w io.Writer, respData []byte) {
 	fmt.Fprintln(w, "")
 }
 
-func logProtoMessage(w io.Writer, m *prompb.WriteRequest, t string) {
+func logProtoMessage(w io.Writer, m proto.Message, t string) {
 	message, err := marshalProtoMessage(m)
 	if err != nil {
 		log.Printf("Failed to marshal to JSON: %v", err)
@@ -183,22 +216,11 @@ func logProtoMessage(w io.Writer, m *prompb.WriteRequest, t string) {
 	fmt.Fprintln(w, "")
 }
 
-//func marshalProtoMessage(m proto.Message) ([]byte, error) {
-//	return protojson.MarshalOptions{
-//		Multiline: true,
-//		Indent:    "  ",
-//	}.Marshal(m)
-//}
-
-func marshalProtoMessage(m *prompb.WriteRequest) ([]byte, error) {
-	var buf bytes.Buffer
-	marshaler := jsonpb.Marshaler{
-		Indent: "  ",
-	}
-	if err := marshaler.Marshal(&buf, m); err != nil {
-		return nil, err
-	}
-	return buf.Bytes(), nil
+func marshalProtoMessage(m proto.Message) ([]byte, error) {
+	return protojson.MarshalOptions{
+		Multiline: true,
+		Indent:    "  ",
+	}.Marshal(m)
 }
 
 func forwardRequest(buf io.Writer, endpoint string, body []byte, original *http.Request, responseMessage proto.Message) (*http.Response, error) {
