@@ -10,6 +10,7 @@ import (
 	"net/http/httputil"
 
 	"github.com/caarlos0/env/v11"
+	"github.com/golang/snappy"
 	protoLogs "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	protoMetrics "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	protoTrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
@@ -106,20 +107,20 @@ func handleRequest(w http.ResponseWriter, r *http.Request, protoMessage protoReq
 
 	// 圧縮形式に応じて解凍後のデータを取得（解凍が必要であれば）
 	encoding := r.Header.Get("Content-Encoding")
+	log.Println("Content-Encoding...:", encoding)
 	uncompressedReqBody, err := maybeDecompress(body, encoding)
 	if err != nil {
 		log.Printf("解凍に失敗しました（エンコーディング: %s）: %v", encoding, err)
 		uncompressedReqBody = body
 	}
 
-	//if err := proto.Unmarshal(uncompressedReqBody, protoMessage.request); err != nil {
-	//	log.Printf("Failed to parse OTLP logs: %v", err)
-	//	http.Error(w, "invalid protobuf", http.StatusBadRequest)
-	//	return
-	//}
+	if err := proto.Unmarshal(uncompressedReqBody, protoMessage.request); err != nil {
+		log.Printf("Failed to parse OTLP logs: %v", err)
+		http.Error(w, "invalid protobuf", http.StatusBadRequest)
+		return
+	}
 
-	//logProtoMessage(buf, protoMessage.request, "Request")
-	dumpBody("Request (decompressed)", uncompressedReqBody)
+	logProtoMessage(buf, protoMessage.request, "Request")
 
 	if forwardTo == "" {
 		w.WriteHeader(http.StatusOK)
@@ -253,7 +254,12 @@ func maybeDecompress(data []byte, encoding string) ([]byte, error) {
 		}
 		defer r.Close()
 		return io.ReadAll(r)
-		// 他の圧縮形式（例: snappyなど）の場合はここに追記
+	case "snappy":
+		r, err := snappy.Decode(nil, data)
+		if err != nil {
+			return nil, err
+		}
+		return r, nil
 	default:
 		return data, nil
 	}
