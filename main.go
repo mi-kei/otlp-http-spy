@@ -113,14 +113,14 @@ func handleRequest(w http.ResponseWriter, r *http.Request, protoMessage protoReq
 		log.Printf("解凍に失敗しました（エンコーディング: %s）: %v", encoding, err)
 		uncompressedReqBody = body
 	}
-
-	if err := proto.Unmarshal(uncompressedReqBody, protoMessage.request); err != nil {
-		log.Printf("Failed to parse OTLP logs: %v", err)
-		http.Error(w, "invalid protobuf", http.StatusBadRequest)
-		return
-	}
-
-	logProtoMessage(buf, protoMessage.request, "Request")
+	dumpBody("Request (decompressed)", uncompressedReqBody)
+	//if err := proto.Unmarshal(uncompressedReqBody, protoMessage.request); err != nil {
+	//	log.Printf("Failed to parse OTLP logs: %v", err)
+	//	http.Error(w, "invalid protobuf", http.StatusBadRequest)
+	//	return
+	//}
+	//
+	//logProtoMessage(buf, protoMessage.request, "Request")
 
 	if forwardTo == "" {
 		w.WriteHeader(http.StatusOK)
