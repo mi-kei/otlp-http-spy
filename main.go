@@ -4,18 +4,23 @@ import (
 	"bytes"
 	"compress/gzip"
 	"fmt"
+	"github.com/prometheus/prometheus/prompb"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httputil"
 
 	"github.com/caarlos0/env/v11"
+	"github.com/golang/protobuf/jsonpb"
+	"github.com/golang/protobuf/proto" // ← こちらのレガシーパッケージを使う
 	"github.com/golang/snappy"
+
+	// OTel 用
 	protoLogs "go.opentelemetry.io/proto/otlp/collector/logs/v1"
 	protoMetrics "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	protoTrace "go.opentelemetry.io/proto/otlp/collector/trace/v1"
-	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/proto"
+	googleprotojson "google.golang.org/protobuf/encoding/protojson"
+	googleproto "google.golang.org/protobuf/proto"
 )
 
 var config Config
@@ -41,8 +46,8 @@ func (c *Config) Init() {
 }
 
 type protoRequestResponse struct {
-	request  proto.Message
-	response proto.Message
+	request  googleproto.Message
+	response googleproto.Message
 }
 
 func getProtoRequestResponse(tp string) protoRequestResponse {
@@ -113,23 +118,27 @@ func handleRequest(w http.ResponseWriter, r *http.Request, protoMessage protoReq
 		log.Printf("解凍に失敗しました（エンコーディング: %s）: %v", encoding, err)
 		uncompressedReqBody = body
 	}
-
-	// デコードを試み、失敗すれば生データをダンプ
-	if err := proto.Unmarshal(uncompressedReqBody, protoMessage.request); err != nil {
-		log.Printf("Failed to parse OTLP data: %v", err)
-		dumpBody("Request (raw, failed to parse)", uncompressedReqBody)
+	remoteWriteVer := r.Header.Get("X-Prometheus-Remote-Write-Version")
+	if remoteWriteVer == "0.1.0" {
+		log.Println("Detected Prometheus Remote Write:", remoteWriteVer)
+		handleRemoteWriteDecode(buf, uncompressedReqBody)
 	} else {
-		// 成功した場合は JSON 表示を行う
-		logProtoMessage(buf, protoMessage.request, "Decoded Request")
+		otlpProto := getProtoRequestResponse("metrics")
+		if err := googleproto.Unmarshal(uncompressedReqBody, otlpProto.request); err != nil {
+			log.Printf("Failed to parse OTLP data: %v", err)
+			dumpBody("Request (raw, failed to parse)", uncompressedReqBody)
+		} else {
+			// デコード成功 -> JSON 表示
+			logProtoMessage(buf, otlpProto.request, "Decoded OTLP Request")
+		}
 	}
-
 	if forwardTo == "" {
 		w.WriteHeader(http.StatusOK)
 		log.Println(buf.String())
 		return
 	}
 
-	resp, err := forwardRequest(buf, forwardTo, body, r, protoMessage.response)
+	resp, err := forwardRequest(buf, forwardTo, body, r)
 	if err != nil {
 		log.Printf("Forwarding failed: %v", err)
 		http.Error(w, "failed to forward request", http.StatusBadGateway)
@@ -144,7 +153,7 @@ func handleRequest(w http.ResponseWriter, r *http.Request, protoMessage protoReq
 		return
 	}
 
-	if err := proto.Unmarshal(respBytes, protoMessage.response); err != nil {
+	if err := googleproto.Unmarshal(respBytes, protoMessage.response); err != nil {
 		logRawResponseBody(buf, respBytes)
 	} else {
 		logProtoMessage(buf, protoMessage.response, "Response")
@@ -207,7 +216,7 @@ func logRawResponseBody(w io.Writer, respData []byte) {
 	fmt.Fprintln(w, "")
 }
 
-func logProtoMessage(w io.Writer, m proto.Message, t string) {
+func logProtoMessage(w io.Writer, m googleproto.Message, t string) {
 	message, err := marshalProtoMessage(m)
 	if err != nil {
 		log.Printf("Failed to marshal to JSON: %v", err)
@@ -217,14 +226,14 @@ func logProtoMessage(w io.Writer, m proto.Message, t string) {
 	fmt.Fprintln(w, "")
 }
 
-func marshalProtoMessage(m proto.Message) ([]byte, error) {
-	return protojson.MarshalOptions{
+func marshalProtoMessage(m googleproto.Message) ([]byte, error) {
+	return googleprotojson.MarshalOptions{
 		Multiline: true,
 		Indent:    "  ",
 	}.Marshal(m)
 }
 
-func forwardRequest(buf io.Writer, endpoint string, body []byte, original *http.Request, responseMessage proto.Message) (*http.Response, error) {
+func forwardRequest(buf io.Writer, endpoint string, body []byte, original *http.Request) (*http.Response, error) {
 	req, err := http.NewRequest("POST", endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create forward request: %w", err)
@@ -267,4 +276,27 @@ func maybeDecompress(data []byte, encoding string) ([]byte, error) {
 
 func dumpBody(prefix string, data []byte) {
 	log.Printf("=== %s Dump ===\n%s", prefix, string(data))
+}
+
+func handleRemoteWriteDecode(w io.Writer, data []byte) {
+	// Remote Write (prompb.WriteRequest) は古い protoc 生成の場合が多いので
+	// github.com/golang/protobuf/proto を使う
+	var req prompb.WriteRequest
+	if err := proto.Unmarshal(data, &req); err != nil {
+		log.Printf("Failed to parse Prometheus remote write data: %v", err)
+		dumpBody("Remote Write (raw, failed to parse)", data)
+		return
+	}
+	var marshaler = &jsonpb.Marshaler{Indent: "  "}
+	var buf bytes.Buffer
+	err := marshaler.Marshal(&buf, &req)
+	if err != nil {
+		log.Printf("Failed to marshal WriteRequest to JSON: %v", err)
+		dumpBody("Remote Write (raw, marshal error)", data)
+		return
+	}
+
+	fmt.Fprintf(w, "=== Remote Write (Decoded) ===\n\n")
+	fmt.Fprintln(w, buf.String())
+	fmt.Fprintln(w, "")
 }
